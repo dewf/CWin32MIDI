@@ -1,4 +1,4 @@
-#include "..\build\msvc2019\header.h"
+#include "header.h"
 #include "CWin32MIDI.h"
 
 #include <mmsystem.h>

@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#include "../../../source/CWin32MIDI.h"
+#include "../library/source/CWin32MIDI.h"
 
 extern "C" int midiEventHandler(CWin32Midi_Event *event, CWin32Midi_Device device, void *userData)
 {
@@ -42,7 +42,7 @@ int main()
     if (CWin32Midi_OpenInput(inputInfos[0].id, nullptr, CWin32Midi_InputMode_Queue, &input) == 0) {
 
         if (CWin32Midi_Start(input) == 0) {
-            printf("sleeping 10 seconds...\n");
+            printf("running for 10 seconds...\n");
 
             int interval = 100;
             for (int i = 0; i < 10000/interval; i++) {
