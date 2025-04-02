@@ -2,22 +2,36 @@
 #include "CWin32MIDI.h"
 
 #include <mmsystem.h>
+#include <atomic>
+#include <algorithm>
 
 #include "unicodestuff.h"
 
-#include "..\deps\readerwriterqueue\readerwriterqueue.h"
-
+#include "../deps/readerwriterqueue/readerwriterqueue.h"
 using namespace moodycamel;
+
+// Ensure 'min' and 'max' macros don't interfere with std::min/max
+#ifdef min
+    #undef min
+#endif
+#ifdef max
+    #undef max
+#endif
 
 struct _CWin32Midi_DeviceID {
     bool isInput;
     int deviceIndex;
     std::string name;
-    _CWin32Midi_DeviceID(bool isInput, int deviceIndex, std::string name) {
+    _CWin32Midi_DeviceID(bool isInput, int deviceIndex, const std::string &name) {
         this->isInput = isInput;
         this->deviceIndex = deviceIndex;
         this->name = name;
     }
+};
+
+struct MidiMsgInternal {
+    DWORD absTime;          // from start
+    unsigned int data;
 };
 
 struct _CWin32Midi_Device {
@@ -27,10 +41,13 @@ struct _CWin32Midi_Device {
     CWin32Midi_InputMode inputMode;
     bool started = false;
     //
-    ReaderWriterQueue<CWin32Midi_MidiMsg> q;
-    DWORD startTime, lastRefTime; // for time offset calculation
-    
-    _CWin32Midi_Device() : q(1024) {}
+    ReaderWriterQueue<MidiMsgInternal> queue;
+
+    // for time offset calculation
+    DWORD startTime;
+    std::atomic<DWORD> lastReadTime; // referenced by both threads
+
+    _CWin32Midi_Device() : queue(1024) {}
 };
 
 static CWin32Midi_EventCallback apiClientCallback;
@@ -126,13 +143,10 @@ void CALLBACK myMidiInProc(HMIDIIN hMidiIn, UINT wMsg, DWORD_PTR dwInstance, DWO
             apiClientCallback(&event, dev, dev->userData);
         }
         else { // Queue
-            CWin32Midi_MidiMsg msg;
-            // refTime is the absolute time from which the dwParam2s are measured
-            // lastRefTime is the absolute last-read time
-            auto absTime = (DWORD)(dev->startTime + dwParam2);
-            msg.relTime = absTime - dev->lastRefTime;
-            msg.data.uint32 = (UINT32)dwParam1;
-            dev->q.try_enqueue(msg);
+            MidiMsgInternal msg {};
+            msg.absTime = static_cast<DWORD>(dev->startTime + dwParam2);
+            msg.data = static_cast<unsigned int>(dwParam1); // should this be longer? DWORD_PTR is 64-bit, no?
+            dev->queue.try_enqueue(msg);
         }
         break;
     }
@@ -185,10 +199,10 @@ CWIN32MIDI_API int CDECL CWin32Midi_CloseInput(CWin32Midi_Device handle)
 CWIN32MIDI_API int CDECL CWin32Midi_Start(CWin32Midi_Device handle)
 {
     if (handle && !handle->started) {
-        midiInStart(handle->hMidiIn);
-        //
         handle->startTime = timeGetTime();
-        handle->lastRefTime = handle->startTime;
+        handle->lastReadTime = handle->startTime;
+        //
+        midiInStart(handle->hMidiIn);
         //
         logFormatDev(handle, "midi in started");
         handle->started = true;
@@ -210,18 +224,23 @@ CWIN32MIDI_API int CDECL CWin32Midi_Stop(CWin32Midi_Device handle)
 
 CWIN32MIDI_API int CDECL CWin32Midi_ReadInput(CWin32Midi_Device handle, CWin32Midi_MidiMsg *dest, int destSize, int *numRead)
 {
-    CWin32Midi_MidiMsg msg;
+    MidiMsgInternal queueMsg {};
     int read = 0;
-    while (destSize > 0 && handle->q.try_dequeue(msg)) {
-        *dest++ = msg;
+    while (destSize > 0 && handle->queue.try_dequeue(queueMsg)) {
+        CWin32Midi_MidiMsg outMsg;
+        outMsg.relTime = std::max(0L, static_cast<long>(queueMsg.absTime) - static_cast<long>(handle->lastReadTime));
+        outMsg.data.uint32 = queueMsg.data;
+        *dest++ = outMsg;
         destSize--;
         read++;
     }
+    // race condition here: a new MIDI event could be added before we change lastRefTime
+    // but it should be OK - its relative time would be a small negative number, which will be clamped during reading (see .relTime assignment above)
     if (destSize > 0) {
         // if there's still remaning buffer, no more need to be read,
         // and it's safe to reset the ref time
         // (otherwise the client needs to call this function again to be sure it didn't miss anything because of a full buffer)
-        handle->lastRefTime = timeGetTime();
+        handle->lastReadTime = timeGetTime();
     }
     *numRead = read;
     return 0;
