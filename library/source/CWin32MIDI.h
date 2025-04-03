@@ -34,15 +34,17 @@ extern "C" {
     typedef struct {
         CWin32Midi_EventType eventType;
         bool handled;
-        struct {
-            const char *message;
-        } logEvent;
-        struct {
-            union {
-                unsigned char bytes[4];
-                unsigned int uint32;
-            };
-        } dataEvent;
+        union {
+            struct {
+                const char *message;
+            } logEvent;
+            struct {
+                union {
+                    unsigned char bytes[4];
+                    unsigned int uint32;
+                };
+            } dataEvent;
+        };
     } CWin32Midi_Event;
 
     typedef int(CDECL *CWin32Midi_EventCallback)(CWin32Midi_Event *event, CWin32Midi_Device device, void *userData);
